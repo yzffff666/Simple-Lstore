@@ -166,23 +166,67 @@ class Index:
     Locate a range of records in the index
     """
     def locate_range(self, begin, end, column):
-        # For aggregates on primary key (column 0), use the sorted_records structure
+        """Optimized range query implementation"""
+        # Fast path for primary key column using sorted_records
         if column == 0:
+            # Pre-allocate result with appropriate size estimate
             result = {}
             left = bisect.bisect_left(self.sorted_records, (begin, b""))
             right = bisect.bisect_right(self.sorted_records, (end, b"\xff"))
-            for key, encoded_rid in self.sorted_records[left:right]:
-                result[key] = encoded_rid.decode('utf-8')
+            
+            # Use dictionary comprehension for better performance
+            result = {key: rid.decode('utf-8') for key, rid in self.sorted_records[left:right]}
             return result if result else False
-        # For other columns, flush only that column's cache.
+        
+        # For other columns
         self._flush_cache_for_column(column)
-        result = {}
-        rng = self.indices[column][begin: end + 1]
-        if not rng:
+        
+        # Start at the first leaf containing values >= begin
+        node = self.indices[column].search(begin)
+        if not node:
             return False
-        for key in rng:
-            result[key] = self.indices[column][key].decode('utf-8')
+        
+        result = {}
+        # Traverse leaf nodes without repeated searches
+        while node:
+            for i, k in enumerate(node.keys):
+                if k < begin:
+                    continue
+                if end is not None and k > end:
+                    return result if result else False
+                result[k] = node.children[i].decode('utf-8')
+            
+            # Move to next leaf
+            node = node.next
+        
         return result if result else False
+    
+    def exists(self, column, value):
+        """Fast existence check with early returns"""
+        # Check primary key cache first (fastest path)
+        if column == 0 and value in self.primary_key_cache:
+            return True
+        
+        # Check unsorted and insert caches
+        for cache_key, _ in self.unsorted_cache[column]:
+            if cache_key == value:
+                return True
+                
+        for cache_key, _ in self.insert_cache[column]:
+            if cache_key == value:
+                return True
+                
+        # Only flush if necessary
+        if not self.unsorted_cache[column] and not self.insert_cache[column]:
+            # Direct B+ tree check without flushing caches
+            try:
+                return self.indices[column].has_key(value)
+            except Exception:
+                return False
+        
+        # Full check with cache flush
+        self._flush_cache_for_column(column)
+        return self.indices[column].has_key(value)
     
     def __getstate__(self):
         """
@@ -315,6 +359,18 @@ class BPlusTree:
                 result.append((k, v))
             node = node.next
         return result
+    
+    def has_key(self, key):
+        """
+        Check if key exists in the tree without retrieving value
+        Much faster than __getitem__ for existence checks
+        """
+        try:
+            leaf = self.search(key)
+            i = bisect.bisect_left(leaf.keys, key)
+            return i < len(leaf.keys) and leaf.keys[i] == key
+        except:
+            return False
 
 
 class BPlusTreeNode:
