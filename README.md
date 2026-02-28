@@ -32,8 +32,3 @@ Simple-Lstore/
 └── README.md
 ```
 
-Requirements
-Python 3.10+ (or your local version)
-No external dependencies required unless you added some
-If you use dependencies, create a requirements.txt and install with:
-``` pip install -r requirements.txt```
